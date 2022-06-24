@@ -3,7 +3,6 @@ package timer
 import (
 	"context"
 	"github.com/Workiva/go-datastructures/queue"
-	"log"
 	"sync"
 	"time"
 )
@@ -81,16 +80,15 @@ func (t *Timer) Start() {
 		return
 	}
 	t.started = true
-	log.Println("start timer", t.name)
 	go func() {
 		now := time.Now().UnixMilli()
+		var cache []*node
 		for {
 			select {
 			case <-t.context.Done():
 				return
 			default:
 				now += t.lcm
-				log.Printf("%s timer tick: %d", t.name, now)
 				for {
 					if t.queue.Empty() {
 						break
@@ -104,18 +102,20 @@ func (t *Timer) Start() {
 					}
 					n := i[0].(*node)
 					if n.at > now {
-						if err := t.queue.Put(n); err != nil {
-							log.Println(err)
-						}
+						cache = append(cache, n)
 						break
 					}
-					go n.action()
-					if ok := t.Add(n.interval, n.action); !ok {
-						log.Println("Cannot add previous action")
-					}
-					n.action = nil
-					nodePool.Put(n)
+					n.action()
+					cache = append(cache, n)
 				}
+				go func() {
+					for _, n := range cache {
+						t.Add(n.interval, n.action)
+						n.action = nil
+						nodePool.Put(n)
+					}
+					cache = nil
+				}()
 				time.Sleep(time.Duration(t.lcm) * time.Millisecond)
 			}
 		}
@@ -124,5 +124,4 @@ func (t *Timer) Start() {
 
 func (t *Timer) Stop() {
 	t.contextCancel()
-	log.Println("stop timer", t.name)
 }
