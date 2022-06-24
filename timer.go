@@ -43,10 +43,15 @@ type Timer struct {
 func NewTimer(ctx context.Context, name string, number int) *Timer {
 	t := &Timer{
 		context: ctx,
-		queue:   queue.NewPriorityQueue(number, true),
+		queue:   queue.NewPriorityQueue(number+1, true),
 		name:    name,
 	}
 	t.context, t.contextCancel = context.WithCancel(t.context)
+	t.queue.Put(&node{
+		at:       Now(),
+		interval: time.Hour,
+		action:   func() {},
+	})
 	return t
 }
 
