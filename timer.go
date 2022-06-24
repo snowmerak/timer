@@ -32,18 +32,21 @@ var nodePool = &sync.Pool{
 }
 
 type Timer struct {
-	queue   *queue.PriorityQueue
-	context context.Context
+	queue         *queue.PriorityQueue
+	context       context.Context
+	contextCancel context.CancelFunc
 
 	lcm     int64
 	started bool
 }
 
 func NewTimer(ctx context.Context, number int) *Timer {
-	return &Timer{
+	t := &Timer{
 		context: ctx,
 		queue:   queue.NewPriorityQueue(number, true),
 	}
+	t.context, t.contextCancel = context.WithCancel(t.context)
+	return t
 }
 
 func (t *Timer) Add(interval time.Duration, action func()) bool {
@@ -113,5 +116,5 @@ func (t *Timer) Start() {
 }
 
 func (t *Timer) Stop() {
-	t.context.Done()
+	t.contextCancel()
 }
