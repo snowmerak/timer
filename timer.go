@@ -2,7 +2,6 @@ package timer
 
 import (
 	"context"
-	"fmt"
 	"github.com/Workiva/go-datastructures/queue"
 	"log"
 	"sync"
@@ -35,15 +34,17 @@ type Timer struct {
 	queue         *queue.PriorityQueue
 	context       context.Context
 	contextCancel context.CancelFunc
+	name          string
 
 	lcm     int64
 	started bool
 }
 
-func NewTimer(ctx context.Context, number int) *Timer {
+func NewTimer(ctx context.Context, name string, number int) *Timer {
 	t := &Timer{
 		context: ctx,
 		queue:   queue.NewPriorityQueue(number, true),
+		name:    name,
 	}
 	t.context, t.contextCancel = context.WithCancel(t.context)
 	return t
@@ -56,7 +57,6 @@ func (t *Timer) Add(interval time.Duration, action func()) bool {
 		} else {
 			t.lcm = BinaryGcd(t.lcm, interval.Milliseconds())
 		}
-		fmt.Println(t.lcm)
 	}
 
 	n := nodePool.Get().(*node)
@@ -76,6 +76,7 @@ func (t *Timer) Start() {
 		return
 	}
 	t.started = true
+	log.Println("start timer", t.name)
 	go func() {
 		now := time.Now().UnixMilli()
 		for {
@@ -84,6 +85,7 @@ func (t *Timer) Start() {
 				return
 			default:
 				now += t.lcm
+				log.Printf("%s timer tick: %d", t.name, now)
 				for {
 					if t.queue.Empty() {
 						break
@@ -117,4 +119,5 @@ func (t *Timer) Start() {
 
 func (t *Timer) Stop() {
 	t.contextCancel()
+	log.Println("stop timer", t.name)
 }
