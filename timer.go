@@ -3,6 +3,7 @@ package timer
 import (
 	"context"
 	"github.com/Workiva/go-datastructures/queue"
+	"log"
 	"sync"
 	"time"
 )
@@ -102,20 +103,21 @@ func (t *Timer) Start() {
 					}
 					n := i[0].(*node)
 					if n.at > now {
-						cache = append(cache, n)
+						if err := t.queue.Put(n); err != nil {
+							log.Println(err)
+						}
 						break
 					}
-					n.action()
+					go n.action()
 					cache = append(cache, n)
 				}
-				go func() {
+				go func(cache []*node) {
 					for _, n := range cache {
 						t.Add(n.interval, n.action)
-						n.action = nil
 						nodePool.Put(n)
 					}
-					cache = nil
-				}()
+				}(cache)
+				cache = cache[:0]
 				time.Sleep(time.Duration(t.lcm) * time.Millisecond)
 			}
 		}
