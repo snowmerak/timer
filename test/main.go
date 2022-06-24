@@ -35,7 +35,7 @@ func main() {
 
 	t.Start()
 
-	time.Sleep(time.Second * 30)
+	time.Sleep(time.Second * 20)
 	t.Stop()
 
 	fmt.Println("two:", two)
