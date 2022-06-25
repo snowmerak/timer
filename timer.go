@@ -30,6 +30,11 @@ var nodePool = &sync.Pool{
 	},
 }
 
+type Schedule struct {
+	Action   func()
+	Interval time.Duration
+}
+
 type Timer struct {
 	queue         *queue.PriorityQueue
 	context       context.Context
@@ -40,10 +45,10 @@ type Timer struct {
 	started bool
 }
 
-func NewTimer(ctx context.Context, name string, number int) *Timer {
+func NewTimer(ctx context.Context, name string, schedules []*Schedule) *Timer {
 	t := &Timer{
 		context: ctx,
-		queue:   queue.NewPriorityQueue(number+1, true),
+		queue:   queue.NewPriorityQueue(len(schedules), true),
 		name:    name,
 	}
 	t.context, t.contextCancel = context.WithCancel(t.context)
@@ -52,10 +57,13 @@ func NewTimer(ctx context.Context, name string, number int) *Timer {
 		interval: time.Hour,
 		action:   func() {},
 	})
+	for _, s := range schedules {
+		t.add(s.Interval, s.Action)
+	}
 	return t
 }
 
-func (t *Timer) Add(interval time.Duration, action func()) bool {
+func (t *Timer) add(interval time.Duration, action func()) bool {
 	if !t.started {
 		if t.lcm == 0 {
 			t.lcm = interval.Milliseconds()
@@ -113,7 +121,7 @@ func (t *Timer) Start() {
 				}
 				go func(cache []*node) {
 					for _, n := range cache {
-						t.Add(n.interval, n.action)
+						t.add(n.interval, n.action)
 						nodePool.Put(n)
 					}
 				}(cache)
