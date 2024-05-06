@@ -121,12 +121,18 @@ func NewTimer(totalDuration time.Duration, cellCount int64, runnerPoolSize int) 
 	return t, panicChan, nil
 }
 
-func (t *Timer) AddJobToCell(job Job, cellOrder int64) error {
+func (t *Timer) AddJob(job Job, cellOrder int64) error {
 	if cellOrder < 0 || cellOrder >= int64(len(t.jobList)) {
 		return errors.New("cellOrder out of range")
 	}
 	t.jobList[cellOrder].AddJob(job)
 	return nil
+}
+
+func (t *Timer) RemoveJob(jobId int64) {
+	for _, jl := range t.jobList {
+		jl.Remove(jobId)
+	}
 }
 
 func (t *Timer) Start(ctx context.Context) error {
