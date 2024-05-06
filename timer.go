@@ -2,136 +2,156 @@ package timer
 
 import (
 	"context"
-	"github.com/Workiva/go-datastructures/queue"
-	"log"
+	"errors"
+	"math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
-)
 
-var milliSecond = time.Millisecond.Milliseconds()
+	"github.com/panjf2000/ants/v2"
+)
 
 func Now() int64 {
 	return time.Now().UnixMilli()
 }
 
-type node struct {
-	at       int64
-	interval time.Duration
-	action   func()
+var idSet = sync.Map{}
+
+func generateId() int64 {
+	randId := rand.Int63()
+	for {
+		_, ok := idSet.LoadOrStore(randId, struct{}{})
+		if !ok {
+			return randId
+		}
+		randId = rand.Int63()
+	}
 }
 
-func (n *node) Compare(other queue.Item) int {
-	return int(n.at - other.(*node).at)
+type Job struct {
+	id int64
+	action func()
 }
 
-var nodePool = &sync.Pool{
-	New: func() interface{} {
-		return &node{}
-	},
+func NewJob(job func()) Job {
+	id := generateId()
+
+	return Job{
+		id: id,
+		action: job,
+	}
 }
 
-type Schedule struct {
-	Action   func()
-	Interval time.Duration
+func (j *Job) Id() int64 {
+	return j.id
+}
+
+type JobList struct {
+	lock sync.RWMutex
+	list []Job
+	pool *ants.Pool
+}
+
+func (jl *JobList) AddJob(job Job) {
+	jl.lock.Lock()
+	defer jl.lock.Unlock()
+	jl.list = append(jl.list, job)
+}
+
+func (jl *JobList) Clear() {
+	jl.lock.Lock()
+	defer jl.lock.Unlock()
+	jl.list = jl.list[:0]
+}
+
+func (jl *JobList) Remove(id int64) {
+	jl.lock.Lock()
+	defer jl.lock.Unlock()
+	for i, j := range jl.list {
+		if j.id == id {
+			jl.list = append(jl.list[:i], jl.list[i+1:]...)
+			break
+		}
+	}
+}
+
+func (jl *JobList) Run() {
+	jl.lock.RLock()
+	defer jl.lock.RUnlock()
+	for _, job := range jl.list {
+		jl.pool.Submit(job.action)
+	}
 }
 
 type Timer struct {
-	queue         *queue.PriorityQueue
-	context       context.Context
-	contextCancel context.CancelFunc
-	name          string
-
-	lcm     int64
-	started bool
+	total time.Duration
+	unit time.Duration
+	cellCount int64
+	jobList []*JobList
+	pool *ants.Pool
+	ticker atomic.Pointer[time.Ticker]
 }
 
-func NewTimer(ctx context.Context, name string, schedules []*Schedule) *Timer {
-	t := &Timer{
-		context: ctx,
-		queue:   queue.NewPriorityQueue(len(schedules), true),
-		name:    name,
+func NewTimer(totalDuration time.Duration, cellCount int64, runnerPoolSize int) (timer *Timer, panicChannel <-chan any, err error) {
+	panicChan := make(chan any, 128)
+	p, err := ants.NewPool(runnerPoolSize, ants.WithExpiryDuration(totalDuration), ants.WithNonblocking(false), ants.WithPreAlloc(false), ants.WithPanicHandler(func(i interface{}) {
+		panicChan <- i
+	}))
+	if err != nil {
+		return nil, nil, err
 	}
-	t.context, t.contextCancel = context.WithCancel(t.context)
-	t.queue.Put(&node{
-		at:       Now(),
-		interval: time.Hour,
-		action:   func() {},
-	})
-	for _, s := range schedules {
-		t.add(s.Interval, s.Action)
-	}
-	return t
-}
 
-func (t *Timer) add(interval time.Duration, action func()) bool {
-	if !t.started {
-		if t.lcm == 0 {
-			t.lcm = interval.Milliseconds()
-		} else {
-			t.lcm = BinaryGcd(t.lcm, interval.Milliseconds())
+	unitDurtaion := totalDuration / time.Duration(cellCount)
+	jobList := make([]*JobList, cellCount)
+	for i := int64(0); i < cellCount; i++ {
+		jobList[i] = &JobList{
+			list: make([]Job, 0),
+			pool: p,
 		}
 	}
 
-	n := nodePool.Get().(*node)
-	n.interval = interval
-	n.at = Now() + n.interval.Milliseconds()
-	n.action = action
 
-	err := t.queue.Put(n)
-	if err != nil {
-		return false
+	t := &Timer{
+		total: totalDuration,
+		unit: unitDurtaion,
+		cellCount: cellCount,
+		jobList: jobList,
+		pool: p,
 	}
-	return true
+	return t, panicChan, nil
 }
 
-func (t *Timer) Start() {
-	if t.started {
-		return
+func (t *Timer) AddJobToCell(job Job, cellOrder int64) error {
+	if cellOrder < 0 || cellOrder >= int64(len(t.jobList)) {
+		return errors.New("cellOrder out of range")
 	}
-	t.started = true
+	t.jobList[cellOrder].AddJob(job)
+	return nil
+}
+
+func (t *Timer) Start(ctx context.Context) error {
+	if t.ticker.Load() != nil {
+		return errors.New("timer already started")
+	}
+
+	ticker := time.NewTicker(t.unit)
+	t.ticker.Store(ticker)
 	go func() {
-		now := time.Now().UnixMilli()
-		var cache []*node
+		cell := int64(0)
+		done := ctx.Done()
 		for {
 			select {
-			case <-t.context.Done():
+			case <-done:
+				t.pool.Release()
+				ticker.Stop()
+				t.ticker.Store(nil)
 				return
-			default:
-				now += t.lcm
-				for {
-					if t.queue.Empty() {
-						break
-					}
-					i, err := t.queue.Get(1)
-					if err != nil {
-						break
-					}
-					if i == nil {
-						break
-					}
-					n := i[0].(*node)
-					if n.at > now {
-						if err := t.queue.Put(n); err != nil {
-							log.Println(err)
-						}
-						break
-					}
-					go n.action()
-					cache = append(cache, n)
-				}
-				go func(cache []*node) {
-					for _, n := range cache {
-						t.add(n.interval, n.action)
-						nodePool.Put(n)
-					}
-				}(cache)
-				cache = cache[:0]
-				time.Sleep(time.Duration(t.lcm) * time.Millisecond)
+			case <-ticker.C:
+				t.jobList[cell].Run()
+				cell = (cell+1) % t.cellCount
 			}
 		}
 	}()
-}
 
-func (t *Timer) Stop() {
-	t.contextCancel()
+	return nil
 }
